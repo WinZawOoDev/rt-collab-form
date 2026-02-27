@@ -1,4 +1,5 @@
+@baseUrl = http://localhost:4000
+@token = <paste-jwt-token-from-login>
 
-
-GET http://localhost:4000/api/users
-Authorization: Basic admin password
+GET {{baseUrl}}/api/users
+Authorization: Bearer {{token}}

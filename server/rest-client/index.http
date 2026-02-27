@@ -1,3 +1,35 @@
+@baseUrl = http://localhost:4000
+@token = <paste-jwt-token-from-login>
 
-GET http://localhost:4000/api/data
-Authorization:  Basic admin password
+GET {{baseUrl}}/api/data
+Authorization: Bearer {{token}}
+
+###
+
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{token}}
+
+###
+
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+	"email": "chat-user@example.com",
+	"name": "Chat User"
+}
+
+###
+
+GET {{baseUrl}}/api/messages
+Authorization: Bearer {{token}}
+
+###
+
+POST {{baseUrl}}/api/messages
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+	"content": "Hello from REST client"
+}
