@@ -1,5 +1,5 @@
 @baseUrl = http://localhost:4000
-@token = <paste-jwt-token-from-login>
+@token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjMsImVtYWlsIjoiY2hhdC11c2VyQGV4YW1wbGUuY29tIiwibmFtZSI6IkNoYXQgVXNlciIsImV4cCI6MTc3MjI2MTMzN30.rbgNId4wPLBkPNs7n9lu0JwTR-Gk-N2XxeC-aePwZnk
 
 GET {{baseUrl}}/api/users
 Authorization: Bearer {{token}}

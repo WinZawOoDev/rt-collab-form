@@ -2,8 +2,8 @@ import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 
-import { ChatPanel } from '@/components/chat/chat-panel'
-import type { Message } from '@/components/chat/types'
+import { EvaluatePanel } from '@/components/evaluate/evaluate-panel'
+import type { Message } from '@/components/evaluate/types'
 import { Button } from '@/components/ui/button'
 import {
     ApiUnauthorizedError,
@@ -13,8 +13,8 @@ import {
     getMessagesStreamUrl,
     hydrateAuthToken,
     sendMessage,
-} from '@/lib/chat-api'
-import type { ApiMessage } from '@/lib/chat-api'
+} from '@/lib/evaluate-api'
+import type { ApiMessage } from '@/lib/evaluate-api'
 
 type CurrentUser = {
     id: number
@@ -25,6 +25,13 @@ type CurrentUser = {
 type LoaderData = {
     user: CurrentUser
     messages: Awaited<ReturnType<typeof getMessages>>
+}
+
+const BYPASS_CLIENT_ROUTE_AUTH = true
+const BYPASS_USER: CurrentUser = {
+    id: 0,
+    email: 'guest@local',
+    name: 'Guest',
 }
 
 function mapTimestamp(value: number) {
@@ -57,14 +64,22 @@ function upsertMessage(previous: Message[], next: Message): Message[] {
     return previous.map((message) => (message.id === next.id ? next : message))
 }
 
-export const Route = createFileRoute('/chat')({
+export const Route = createFileRoute('/evaluate')({
     beforeLoad: async () => {
+        if (BYPASS_CLIENT_ROUTE_AUTH) {
+            return
+        }
+
         const token = hydrateAuthToken()
         if (!token) {
             throw redirect({ to: '/' })
         }
     },
     loader: async () => {
+        if (BYPASS_CLIENT_ROUTE_AUTH) {
+            return { user: BYPASS_USER, messages: [] } satisfies LoaderData
+        }
+
         try {
             const user = await getCurrentUser()
             const messages = await getMessages()
@@ -74,10 +89,10 @@ export const Route = createFileRoute('/chat')({
             throw redirect({ to: '/' })
         }
     },
-    component: ChatPage,
+    component: EvaluatePage,
 })
 
-function ChatPage() {
+function EvaluatePage() {
     const navigate = useNavigate()
     const loaderData = Route.useLoaderData()
 
@@ -86,16 +101,21 @@ function ChatPage() {
         mapServerMessages(loaderData.messages, loaderData.user.id),
     )
     const [messageText, setMessageText] = useState('')
-    const [chatError, setChatError] = useState('')
+    const [evaluateError, setEvaluateError] = useState('')
 
-    const canSend = messageText.trim().length > 0
+    const canSend = !BYPASS_CLIENT_ROUTE_AUTH && messageText.trim().length > 0
 
     const handleSessionExpired = () => {
+        if (BYPASS_CLIENT_ROUTE_AUTH) {
+            setEvaluateError('Auth bypass mode is enabled for UI checking.')
+            return
+        }
+
         clearAuthToken()
         setCurrentUser(loaderData.user)
         setMessages([])
         setMessageText('')
-        setChatError('Your session expired. Please sign in again.')
+        setEvaluateError('Your session expired. Please sign in again.')
         void navigate({ to: '/' })
     }
 
@@ -106,12 +126,17 @@ function ChatPage() {
 
     const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault()
+        if (BYPASS_CLIENT_ROUTE_AUTH) {
+            setEvaluateError('Send is disabled while client route auth bypass is enabled.')
+            return
+        }
+
         if (!canSend) {
             return
         }
 
         try {
-            setChatError('')
+            setEvaluateError('')
             const created = await sendMessage(messageText.trim())
             const nextMessage: Message = {
                 id: created.id,
@@ -127,12 +152,16 @@ function ChatPage() {
             if (error instanceof ApiUnauthorizedError) {
                 handleSessionExpired()
             } else {
-                setChatError('Message could not be sent. Please try again.')
+                setEvaluateError('Message could not be sent. Please try again.')
             }
         }
     }
 
     useEffect(() => {
+        if (BYPASS_CLIENT_ROUTE_AUTH) {
+            return
+        }
+
         let isCancelled = false
         let source: EventSource | null = null
         let reconnectTimeoutId: number | null = null
@@ -238,9 +267,9 @@ function ChatPage() {
                     </Button>
                 </div>
 
-                {chatError ? <p className="text-sm text-destructive">{chatError}</p> : null}
+                {evaluateError ? <p className="text-sm text-destructive">{evaluateError}</p> : null}
 
-                <ChatPanel
+                <EvaluatePanel
                     messages={messages}
                     messageText={messageText}
                     canSend={canSend}

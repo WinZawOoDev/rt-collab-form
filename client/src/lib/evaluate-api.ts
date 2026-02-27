@@ -25,7 +25,7 @@ export type ApiMessage = {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000'
-const AUTH_TOKEN_STORAGE_KEY = 'chat-auth-token'
+const AUTH_TOKEN_STORAGE_KEY = 'evaluate-auth-token'
 let authToken = ''
 
 function parseJwtPayload(token: string): { exp?: number } | null {

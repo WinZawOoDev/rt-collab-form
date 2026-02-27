@@ -12,11 +12,11 @@ export function RequireAuth({ isAuthenticated, children }: RequireAuthProps) {
     return (
       <Card className="h-[70vh]">
         <CardHeader>
-          <CardTitle>Team Chat</CardTitle>
-          <CardDescription>Message list and chat form are protected.</CardDescription>
+          <CardTitle>Team Evaluation</CardTitle>
+          <CardDescription>Message list and evaluation form are protected.</CardDescription>
         </CardHeader>
         <CardContent className="flex h-full items-center justify-center">
-          <p className="text-muted-foreground text-sm">Sign in first to access the chat room.</p>
+          <p className="text-muted-foreground text-sm">Sign in first to access the evaluation room.</p>
         </CardContent>
       </Card>
     )

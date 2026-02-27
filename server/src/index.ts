@@ -20,7 +20,7 @@ const app = new Hono<ContextWithPrisma>()
 const messageStreams = new Set<SSEStreamingApi>()
 const jwtSecret = process.env.JWT_SECRET ?? 'dev-jwt-secret'
 
-type ChatMessagePayload = {
+type EvaluateMessagePayload = {
   id: number
   author: string
   content: string
@@ -63,7 +63,7 @@ async function verifyJwtToken(token: string) {
   }
 }
 
-async function broadcastMessage(message: ChatMessagePayload) {
+async function broadcastMessage(message: EvaluateMessagePayload) {
   const payload = JSON.stringify(message)
 
   await Promise.all(
