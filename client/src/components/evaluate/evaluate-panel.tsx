@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form'
-import { Input } from '@/components/ui/input'
+import { EvaluateLexicalInput } from '@/components/evaluate/evaluate-lexical-input'
 
 import type { Message } from './types'
 
@@ -22,6 +23,8 @@ export function EvaluatePanel({
     disableSend = false,
     onSendMessage,
 }: EvaluatePanelProps) {
+    const [editorResetKey, setEditorResetKey] = useState(0)
+
     const form = useForm<EvaluateMessageFormValues>({
         mode: 'onSubmit',
         defaultValues: {
@@ -33,6 +36,7 @@ export function EvaluatePanel({
         const isSent = await onSendMessage(values.content.trim())
         if (isSent) {
             form.reset()
+            setEditorResetKey((previous) => previous + 1)
         }
     }
 
@@ -70,15 +74,20 @@ export function EvaluatePanel({
                                 name="content"
                                 rules={{
                                     required: 'Evaluation message is required.',
-                                    minLength: {
-                                        value: 2,
-                                        message: 'Evaluation message must be at least 2 characters.',
+                                    validate: {
+                                        minLength: (value) =>
+                                            value.trim().length >= 2 ||
+                                            'Evaluation message must be at least 2 characters.',
                                     },
                                 }}
                                 render={({ field }) => (
                                     <FormItem>
                                         <FormControl>
-                                            <Input placeholder="Write an evaluation message..." {...field} />
+                                            <EvaluateLexicalInput
+                                                value={field.value}
+                                                resetKey={editorResetKey}
+                                                onChange={field.onChange}
+                                            />
                                         </FormControl>
                                         <FormMessage />
                                     </FormItem>
