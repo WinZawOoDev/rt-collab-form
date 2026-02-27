@@ -1,6 +1,5 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
-import type { FormEvent } from 'react'
 
 import { EvaluatePanel } from '@/components/evaluate/evaluate-panel'
 import type { Message } from '@/components/evaluate/types'
@@ -100,10 +99,7 @@ function EvaluatePage() {
     const [messages, setMessages] = useState<Message[]>(
         mapServerMessages(loaderData.messages, loaderData.user.id),
     )
-    const [messageText, setMessageText] = useState('')
     const [evaluateError, setEvaluateError] = useState('')
-
-    const canSend = !BYPASS_CLIENT_ROUTE_AUTH && messageText.trim().length > 0
 
     const handleSessionExpired = () => {
         if (BYPASS_CLIENT_ROUTE_AUTH) {
@@ -114,7 +110,6 @@ function EvaluatePage() {
         clearAuthToken()
         setCurrentUser(loaderData.user)
         setMessages([])
-        setMessageText('')
         setEvaluateError('Your session expired. Please sign in again.')
         void navigate({ to: '/' })
     }
@@ -124,20 +119,15 @@ function EvaluatePage() {
         void navigate({ to: '/' })
     }
 
-    const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault()
+    const handleSendMessage = async (content: string): Promise<boolean> => {
         if (BYPASS_CLIENT_ROUTE_AUTH) {
             setEvaluateError('Send is disabled while client route auth bypass is enabled.')
-            return
-        }
-
-        if (!canSend) {
-            return
+            return false
         }
 
         try {
             setEvaluateError('')
-            const created = await sendMessage(messageText.trim())
+            const created = await sendMessage(content)
             const nextMessage: Message = {
                 id: created.id,
                 author: created.author,
@@ -147,13 +137,14 @@ function EvaluatePage() {
                 mine: created.authorId === currentUser.id,
             }
             setMessages((previous) => upsertMessage(previous, nextMessage))
-            setMessageText('')
+            return true
         } catch (error) {
             if (error instanceof ApiUnauthorizedError) {
                 handleSessionExpired()
             } else {
                 setEvaluateError('Message could not be sent. Please try again.')
             }
+            return false
         }
     }
 
@@ -271,9 +262,7 @@ function EvaluatePage() {
 
                 <EvaluatePanel
                     messages={messages}
-                    messageText={messageText}
-                    canSend={canSend}
-                    onMessageTextChange={setMessageText}
+                    disableSend={BYPASS_CLIENT_ROUTE_AUTH}
                     onSendMessage={handleSendMessage}
                 />
             </main>

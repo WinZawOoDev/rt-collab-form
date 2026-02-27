@@ -1,26 +1,41 @@
-import type { FormEvent } from 'react'
+import { useForm } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 
 import type { Message } from './types'
 
 type EvaluatePanelProps = {
     messages: Message[]
-    messageText: string
-    canSend: boolean
-    onMessageTextChange: (value: string) => void
-    onSendMessage: (event: FormEvent<HTMLFormElement>) => void
+    disableSend?: boolean
+    onSendMessage: (content: string) => Promise<boolean>
+}
+
+type EvaluateMessageFormValues = {
+    content: string
 }
 
 export function EvaluatePanel({
     messages,
-    messageText,
-    canSend,
-    onMessageTextChange,
+    disableSend = false,
     onSendMessage,
 }: EvaluatePanelProps) {
+    const form = useForm<EvaluateMessageFormValues>({
+        mode: 'onSubmit',
+        defaultValues: {
+            content: '',
+        },
+    })
+
+    const handleSubmit = async (values: EvaluateMessageFormValues) => {
+        const isSent = await onSendMessage(values.content.trim())
+        if (isSent) {
+            form.reset()
+        }
+    }
+
     return (
         <Card className="h-[70vh]">
             <CardHeader>
@@ -47,16 +62,35 @@ export function EvaluatePanel({
                     ))}
                 </section>
 
-                <form className="flex gap-2" onSubmit={onSendMessage}>
-                    <Input
-                        placeholder="Write a message..."
-                        value={messageText}
-                        onChange={(event) => onMessageTextChange(event.target.value)}
-                    />
-                    <Button type="submit" disabled={!canSend}>
-                        Send
-                    </Button>
-                </form>
+                <Form {...form}>
+                    <form className="flex items-start gap-2" onSubmit={form.handleSubmit(handleSubmit)}>
+                        <div className="flex-1">
+                            <FormField
+                                control={form.control}
+                                name="content"
+                                rules={{
+                                    required: 'Evaluation message is required.',
+                                    minLength: {
+                                        value: 2,
+                                        message: 'Evaluation message must be at least 2 characters.',
+                                    },
+                                }}
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormControl>
+                                            <Input placeholder="Write an evaluation message..." {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                        </div>
+
+                        <Button type="submit" disabled={disableSend || form.formState.isSubmitting}>
+                            Send
+                        </Button>
+                    </form>
+                </Form>
             </CardContent>
         </Card>
     )
