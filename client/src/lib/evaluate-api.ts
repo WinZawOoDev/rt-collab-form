@@ -24,6 +24,11 @@ export type ApiMessage = {
   authorId: number | null
 }
 
+export type EvaluationState = {
+  content: string
+  lexicalJson: string
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000'
 const AUTH_TOKEN_STORAGE_KEY = 'evaluate-auth-token'
 let authToken = ''
@@ -185,6 +190,47 @@ export async function sendMessage(content: string) {
 
   const data = (await response.json()) as { message: ApiMessage }
   return data.message
+}
+
+export async function getEvaluationState() {
+  const response = await fetch(`${API_BASE_URL}/api/evaluation-state`, {
+    headers: {
+      ...getAuthHeaders(),
+    },
+  })
+
+  if (response.status === 401) {
+    throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to fetch evaluation state.')
+  }
+
+  const data = (await response.json()) as { state: EvaluationState }
+  return data.state
+}
+
+export async function saveEvaluationState(state: EvaluationState) {
+  const response = await fetch(`${API_BASE_URL}/api/evaluation-state`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify(state),
+  })
+
+  if (response.status === 401) {
+    throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to save evaluation state.')
+  }
+
+  const data = (await response.json()) as { state: EvaluationState }
+  return data.state
 }
 
 export function getMessagesStreamUrl() {

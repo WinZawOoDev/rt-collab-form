@@ -84,7 +84,7 @@ app.use(
   '*',
   cors({
     origin: ['http://localhost:3000'],
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
+    allowMethods: ['GET', 'POST', 'PUT', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
   }),
 )
@@ -210,6 +210,57 @@ app.get('/api/messages', withPrisma, async (c) => {
   }))
 
   return c.json({ messages })
+})
+
+app.get('/api/evaluation-state', withPrisma, async (c) => {
+  const prisma = c.get('prisma')
+  const authUser = c.get('authUser')
+
+  const user = await prisma.user.findUnique({ where: { email: authUser.email } })
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  const draft = await prisma.evaluateDraft.findUnique({ where: { userId: user.id } })
+
+  return c.json({
+    state: {
+      content: draft?.content ?? '',
+      lexicalJson: draft?.lexicalJson ?? '',
+    },
+  })
+})
+
+app.put('/api/evaluation-state', withPrisma, async (c) => {
+  const prisma = c.get('prisma')
+  const authUser = c.get('authUser')
+  const body = await c.req.json<{ content?: string; lexicalJson?: string }>()
+
+  const user = await prisma.user.findUnique({ where: { email: authUser.email } })
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  const content = body.content ?? ''
+  const lexicalJson = body.lexicalJson ?? ''
+
+  const state = await prisma.evaluateDraft.upsert({
+    where: { userId: user.id },
+    update: { content, lexicalJson },
+    create: {
+      userId: user.id,
+      content,
+      lexicalJson,
+    },
+  })
+
+  return c.json({
+    state: {
+      content: state.content,
+      lexicalJson: state.lexicalJson,
+      updatedAt: state.updatedAt,
+    },
+  })
 })
 
 app.post('/api/messages', withPrisma, async (c) => {

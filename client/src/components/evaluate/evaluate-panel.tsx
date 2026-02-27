@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,9 @@ import type { Message } from './types'
 type EvaluatePanelProps = {
     messages: Message[]
     disableSend?: boolean
+    initialDraftContent?: string
+    initialDraftLexicalJson?: string
+    onDraftChange?: (content: string, lexicalJson: string) => Promise<void>
     onSendMessage: (content: string) => Promise<boolean>
 }
 
@@ -21,21 +24,56 @@ type EvaluateMessageFormValues = {
 export function EvaluatePanel({
     messages,
     disableSend = false,
+    initialDraftContent = '',
+    initialDraftLexicalJson = '',
+    onDraftChange,
     onSendMessage,
 }: EvaluatePanelProps) {
     const [editorResetKey, setEditorResetKey] = useState(0)
+    const [lexicalJson, setLexicalJson] = useState(initialDraftLexicalJson)
 
     const form = useForm<EvaluateMessageFormValues>({
         mode: 'onSubmit',
         defaultValues: {
-            content: '',
+            content: initialDraftContent,
         },
     })
+
+    const content = form.watch('content')
+
+    useEffect(() => {
+        form.reset({ content: initialDraftContent })
+        setLexicalJson(initialDraftLexicalJson)
+        setEditorResetKey((previous) => previous + 1)
+    }, [form, initialDraftContent, initialDraftLexicalJson])
+
+    const shouldPersistDraft = useMemo(
+        () => !disableSend && typeof onDraftChange === 'function',
+        [disableSend, onDraftChange],
+    )
+
+    useEffect(() => {
+        if (!shouldPersistDraft || !onDraftChange) {
+            return
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            void onDraftChange(content ?? '', lexicalJson)
+        }, 600)
+
+        return () => {
+            window.clearTimeout(timeoutId)
+        }
+    }, [content, lexicalJson, onDraftChange, shouldPersistDraft])
 
     const handleSubmit = async (values: EvaluateMessageFormValues) => {
         const isSent = await onSendMessage(values.content.trim())
         if (isSent) {
             form.reset()
+            setLexicalJson('')
+            if (onDraftChange) {
+                await onDraftChange('', '')
+            }
             setEditorResetKey((previous) => previous + 1)
         }
     }
@@ -84,9 +122,13 @@ export function EvaluatePanel({
                                     <FormItem>
                                         <FormControl>
                                             <EvaluateLexicalInput
-                                                value={field.value}
+                                                initialContent={field.value}
+                                                initialLexicalJson={lexicalJson}
                                                 resetKey={editorResetKey}
-                                                onChange={field.onChange}
+                                                onChange={(nextContent, nextLexicalJson) => {
+                                                    field.onChange(nextContent)
+                                                    setLexicalJson(nextLexicalJson)
+                                                }}
                                             />
                                         </FormControl>
                                         <FormMessage />

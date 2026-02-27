@@ -7,10 +7,12 @@ import { Button } from '@/components/ui/button'
 import {
     ApiUnauthorizedError,
     clearAuthToken,
+    getEvaluationState,
     getCurrentUser,
     getMessages,
     getMessagesStreamUrl,
     hydrateAuthToken,
+    saveEvaluationState,
     sendMessage,
 } from '@/lib/evaluate-api'
 import type { ApiMessage } from '@/lib/evaluate-api'
@@ -24,6 +26,10 @@ type CurrentUser = {
 type LoaderData = {
     user: CurrentUser
     messages: Awaited<ReturnType<typeof getMessages>>
+    evaluationState: {
+        content: string
+        lexicalJson: string
+    }
 }
 
 const BYPASS_CLIENT_ROUTE_AUTH = true
@@ -31,6 +37,11 @@ const BYPASS_USER: CurrentUser = {
     id: 0,
     email: 'guest@local',
     name: 'Guest',
+}
+
+const BYPASS_EVALUATION_STATE = {
+    content: '',
+    lexicalJson: '',
 }
 
 function mapTimestamp(value: number) {
@@ -76,13 +87,20 @@ export const Route = createFileRoute('/evaluate')({
     },
     loader: async () => {
         if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return { user: BYPASS_USER, messages: [] } satisfies LoaderData
+            return {
+                user: BYPASS_USER,
+                messages: [],
+                evaluationState: BYPASS_EVALUATION_STATE,
+            } satisfies LoaderData
         }
 
         try {
-            const user = await getCurrentUser()
-            const messages = await getMessages()
-            return { user, messages } satisfies LoaderData
+            const [user, messages, evaluationState] = await Promise.all([
+                getCurrentUser(),
+                getMessages(),
+                getEvaluationState(),
+            ])
+            return { user, messages, evaluationState } satisfies LoaderData
         } catch {
             clearAuthToken()
             throw redirect({ to: '/' })
@@ -99,6 +117,8 @@ function EvaluatePage() {
     const [messages, setMessages] = useState<Message[]>(
         mapServerMessages(loaderData.messages, loaderData.user.id),
     )
+    const [draftContent, setDraftContent] = useState(loaderData.evaluationState.content)
+    const [draftLexicalJson, setDraftLexicalJson] = useState(loaderData.evaluationState.lexicalJson)
     const [evaluateError, setEvaluateError] = useState('')
 
     const handleSessionExpired = () => {
@@ -145,6 +165,23 @@ function EvaluatePage() {
                 setEvaluateError('Message could not be sent. Please try again.')
             }
             return false
+        }
+    }
+
+    const handleDraftChange = async (content: string, lexicalJson: string) => {
+        if (BYPASS_CLIENT_ROUTE_AUTH) {
+            return
+        }
+
+        setDraftContent(content)
+        setDraftLexicalJson(lexicalJson)
+
+        try {
+            await saveEvaluationState({ content, lexicalJson })
+        } catch (error) {
+            if (error instanceof ApiUnauthorizedError) {
+                handleSessionExpired()
+            }
         }
     }
 
@@ -263,6 +300,9 @@ function EvaluatePage() {
                 <EvaluatePanel
                     messages={messages}
                     disableSend={BYPASS_CLIENT_ROUTE_AUTH}
+                    initialDraftContent={draftContent}
+                    initialDraftLexicalJson={draftLexicalJson}
+                    onDraftChange={handleDraftChange}
                     onSendMessage={handleSendMessage}
                 />
             </main>

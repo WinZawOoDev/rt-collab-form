@@ -6,12 +6,18 @@ import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import { $getRoot, type EditorState } from 'lexical'
 
 type EvaluateLexicalInputProps = {
-    value: string
+    initialContent: string
+    initialLexicalJson: string
     resetKey: number
-    onChange: (value: string) => void
+    onChange: (content: string, lexicalJson: string) => void
 }
 
-export function EvaluateLexicalInput({ value, resetKey, onChange }: EvaluateLexicalInputProps) {
+export function EvaluateLexicalInput({
+    initialContent,
+    initialLexicalJson,
+    resetKey,
+    onChange,
+}: EvaluateLexicalInputProps) {
     return (
         <LexicalComposer
             key={resetKey}
@@ -21,12 +27,14 @@ export function EvaluateLexicalInput({ value, resetKey, onChange }: EvaluateLexi
                 onError: (error) => {
                     throw error
                 },
-                editorState: () => {
-                    $getRoot().clear().append()
-                    if (value) {
-                        $getRoot().selectEnd().insertText(value)
-                    }
-                },
+                editorState:
+                    initialLexicalJson ||
+                    (() => {
+                        $getRoot().clear().append()
+                        if (initialContent) {
+                            $getRoot().selectEnd().insertText(initialContent)
+                        }
+                    }),
             }}
         >
             <div className="relative min-h-9 rounded-md border border-input bg-transparent px-3 py-2 text-sm">
@@ -49,7 +57,7 @@ export function EvaluateLexicalInput({ value, resetKey, onChange }: EvaluateLexi
                 <OnChangePlugin
                     onChange={(editorState: EditorState) => {
                         editorState.read(() => {
-                            onChange($getRoot().getTextContent())
+                            onChange($getRoot().getTextContent(), JSON.stringify(editorState.toJSON()))
                         })
                     }}
                 />
