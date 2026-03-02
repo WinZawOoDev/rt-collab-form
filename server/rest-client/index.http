@@ -1,3 +1,35 @@
+@baseUrl = http://localhost:4000
+@token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjMsImVtYWlsIjoiY2hhdC11c2VyQGV4YW1wbGUuY29tIiwibmFtZSI6IkNoYXQgVXNlciIsImV4cCI6MTc3MjI2MTMzN30.rbgNId4wPLBkPNs7n9lu0JwTR-Gk-N2XxeC-aePwZnk
 
-GET http://localhost:4000/api/data
-Authorization:  Basic admin password
+GET {{baseUrl}}/api/data
+Authorization: Bearer {{token}}
+
+###
+
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{token}}
+
+###
+
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+	"email": "evaluate-user@example.com",
+	"name": "Evaluate User"
+}
+
+###
+
+GET {{baseUrl}}/api/messages
+Authorization: Bearer {{token}}
+
+###
+
+POST {{baseUrl}}/api/messages
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+	"content": "Hello from REST client"
+}
