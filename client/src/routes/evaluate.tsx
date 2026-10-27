@@ -1,24 +1,24 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import * as Y from 'yjs'
 
 import { EvaluatePanel } from '@/components/evaluate/evaluate-panel'
 import type { Message } from '@/components/evaluate/types'
 import {
-    ApiConflictError,
     ApiUnauthorizedError,
     clearAuthToken,
     deleteMessage,
-    getEvaluationState,
     getCurrentUser,
     getMessages,
     getMessagesStreamUrl,
     hydrateAuthToken,
-    saveEvaluationState,
     sendMessage,
     sendTyping,
     updateMessage,
 } from '@/lib/evaluate-api'
-import type { ApiMessage, EvaluationState } from '@/lib/evaluate-api'
+import type { ApiMessage } from '@/lib/evaluate-api'
+import { mapServerMessage, mapServerMessages, upsertMessage } from '@/lib/messages'
+import { TeamDraftSync } from '@/lib/team-draft-sync'
 
 type CurrentUser = {
     id: number
@@ -29,7 +29,6 @@ type CurrentUser = {
 type LoaderData = {
     user: CurrentUser
     messages: Awaited<ReturnType<typeof getMessages>>
-    evaluationState: EvaluationState
 }
 
 type TypingUser = {
@@ -37,40 +36,8 @@ type TypingUser = {
     expiresAt: number
 }
 
-const MAX_DRAFT_SAVE_RETRIES = 3
-const DRAFT_SAVE_RETRY_DELAY_MS = 2000
 const TYPING_DISPLAY_MS = 4000
 const TYPING_STOP_DELAY_MS = 3000
-
-function mapTimestamp(value: number) {
-    return `#${value}`
-}
-
-function mapServerMessage(message: ApiMessage, currentUserId: number): Message {
-    return {
-        id: message.id,
-        author: message.author,
-        content: message.content,
-        timestamp: mapTimestamp(message.timestamp),
-        authorId: message.authorId,
-        mine: message.authorId === currentUserId,
-    }
-}
-
-function mapServerMessages(
-    serverMessages: Awaited<ReturnType<typeof getMessages>>,
-    currentUserId: number,
-): Message[] {
-    return serverMessages.map((message) => mapServerMessage(message, currentUserId))
-}
-
-function upsertMessage(previous: Message[], next: Message): Message[] {
-    const exists = previous.some((message) => message.id === next.id)
-    if (!exists) {
-        return [...previous, next].sort((a, b) => a.id - b.id)
-    }
-    return previous.map((message) => (message.id === next.id ? next : message))
-}
 
 export const Route = createFileRoute('/evaluate')({
     beforeLoad: async () => {
@@ -81,12 +48,8 @@ export const Route = createFileRoute('/evaluate')({
     },
     loader: async () => {
         try {
-            const [user, messages, evaluationState] = await Promise.all([
-                getCurrentUser(),
-                getMessages(),
-                getEvaluationState(),
-            ])
-            return { user, messages, evaluationState } satisfies LoaderData
+            const [user, messages] = await Promise.all([getCurrentUser(), getMessages()])
+            return { user, messages } satisfies LoaderData
         } catch {
             clearAuthToken()
             throw redirect({ to: '/' })
@@ -105,13 +68,9 @@ function EvaluatePage() {
     )
     const [typingUsers, setTypingUsers] = useState<Record<number, TypingUser>>({})
 
-    const draftRevisionRef = useRef(loaderData.evaluationState.revision)
-    const pendingDraftRef = useRef<Omit<EvaluationState, 'revision'> | null>(null)
-    const draftSaveInFlightRef = useRef(false)
-    const draftRetryCountRef = useRef(0)
+    const doc = useMemo(() => new Y.Doc(), [])
+    const sync = useMemo(() => new TeamDraftSync(doc), [doc])
 
-    const typingSentRef = useRef(false)
-    const typingStopTimeoutRef = useRef<number | null>(null)
     const typingDisplayTimeoutsRef = useRef<Record<number, number>>({})
 
     const handleSessionExpired = () => {
@@ -121,6 +80,78 @@ function EvaluatePage() {
         void navigate({ to: '/' })
     }
 
+    const handleSessionExpiredRef = useRef(handleSessionExpired)
+    handleSessionExpiredRef.current = handleSessionExpired
+
+    useEffect(() => {
+        let typingSent = false
+        let typingStopTimeoutId: number | null = null
+
+        sync.setHandlers({
+            onUnauthorized: () => {
+                handleSessionExpiredRef.current()
+            },
+            onLocalEdit: () => {
+                if (!typingSent) {
+                    typingSent = true
+                    void sendTyping(true).catch(() => { })
+                }
+
+                if (typingStopTimeoutId !== null) {
+                    window.clearTimeout(typingStopTimeoutId)
+                }
+
+                typingStopTimeoutId = window.setTimeout(() => {
+                    typingSent = false
+                    void sendTyping(false).catch(() => { })
+                }, TYPING_STOP_DELAY_MS)
+            },
+        })
+
+        return () => {
+            if (typingStopTimeoutId !== null) {
+                window.clearTimeout(typingStopTimeoutId)
+            }
+            sync.destroy()
+        }
+    }, [sync])
+
+    const clearTypingDisplayTimeout = (userId: number) => {
+        const timeoutId = typingDisplayTimeoutsRef.current[userId]
+        if (timeoutId !== undefined) {
+            window.clearTimeout(timeoutId)
+            delete typingDisplayTimeoutsRef.current[userId]
+        }
+    }
+
+    const removeTypingUser = (userId: number) => {
+        clearTypingDisplayTimeout(userId)
+        setTypingUsers((previous) => {
+            const next = { ...previous }
+            delete next[userId]
+            return next
+        })
+    }
+
+    const markTypingUser = (userId: number, name: string) => {
+        clearTypingDisplayTimeout(userId)
+        setTypingUsers((previous) => ({
+            ...previous,
+            [userId]: { name, expiresAt: Date.now() + TYPING_DISPLAY_MS },
+        }))
+        typingDisplayTimeoutsRef.current[userId] = window.setTimeout(() => {
+            removeTypingUser(userId)
+        }, TYPING_DISPLAY_MS)
+    }
+
+    const handleTypingEvent = (userId: number, name: string, isTyping: boolean) => {
+        if (isTyping) {
+            markTypingUser(userId, name)
+        } else {
+            removeTypingUser(userId)
+        }
+    }
+
     const handleSendMessage = async (content: string): Promise<boolean> => {
         try {
             const created = await sendMessage(content)
@@ -128,7 +159,7 @@ function EvaluatePage() {
                 id: created.id,
                 author: created.author,
                 content: created.content,
-                timestamp: mapTimestamp(created.timestamp),
+                timestamp: `#${created.timestamp}`,
                 authorId: created.authorId,
                 mine: created.authorId === currentUser.id,
             }
@@ -166,129 +197,6 @@ function EvaluatePage() {
             }
             return false
         }
-    }
-
-    const clearTypingStopTimeout = () => {
-        if (typingStopTimeoutRef.current !== null) {
-            window.clearTimeout(typingStopTimeoutRef.current)
-            typingStopTimeoutRef.current = null
-        }
-    }
-
-    const clearTypingDisplayTimeout = (userId: number) => {
-        const timeoutId = typingDisplayTimeoutsRef.current[userId]
-        if (timeoutId !== undefined) {
-            window.clearTimeout(timeoutId)
-            delete typingDisplayTimeoutsRef.current[userId]
-        }
-    }
-
-    const removeTypingUser = (userId: number) => {
-        clearTypingDisplayTimeout(userId)
-        setTypingUsers((previous) => {
-            const next = { ...previous }
-            delete next[userId]
-            return next
-        })
-    }
-
-    const markTypingUser = (userId: number, name: string) => {
-        clearTypingDisplayTimeout(userId)
-        setTypingUsers((previous) => ({
-            ...previous,
-            [userId]: { name, expiresAt: Date.now() + TYPING_DISPLAY_MS },
-        }))
-        typingDisplayTimeoutsRef.current[userId] = window.setTimeout(() => {
-            removeTypingUser(userId)
-        }, TYPING_DISPLAY_MS)
-    }
-
-    const handleTypingEvent = (userId: number, name: string, isTyping: boolean) => {
-        if (userId === currentUser.id) {
-            return
-        }
-
-        if (isTyping) {
-            markTypingUser(userId, name)
-        } else {
-            removeTypingUser(userId)
-        }
-    }
-
-    const flushDraftSave = async () => {
-        if (draftSaveInFlightRef.current) {
-            return
-        }
-
-        const pending = pendingDraftRef.current
-        if (!pending) {
-            return
-        }
-
-        pendingDraftRef.current = null
-        draftSaveInFlightRef.current = true
-
-        let nextPending: Omit<EvaluationState, 'revision'> | null = null
-        let retryDelay = 0
-
-        try {
-            const saved = await saveEvaluationState(pending, draftRevisionRef.current)
-            draftRevisionRef.current = saved.revision
-            draftRetryCountRef.current = 0
-            nextPending = pendingDraftRef.current
-        } catch (error) {
-            if (error instanceof ApiUnauthorizedError) {
-                pendingDraftRef.current = null
-                draftRetryCountRef.current = 0
-                handleSessionExpired()
-                return
-            }
-
-            if (error instanceof ApiConflictError) {
-                draftRevisionRef.current = error.state.revision
-            } else {
-                retryDelay = DRAFT_SAVE_RETRY_DELAY_MS
-            }
-
-            if (draftRetryCountRef.current < MAX_DRAFT_SAVE_RETRIES) {
-                draftRetryCountRef.current += 1
-                nextPending = pendingDraftRef.current ?? pending
-            } else {
-                pendingDraftRef.current = pendingDraftRef.current ?? pending
-                draftRetryCountRef.current = 0
-            }
-        } finally {
-            draftSaveInFlightRef.current = false
-        }
-
-        if (!nextPending) {
-            return
-        }
-
-        pendingDraftRef.current = nextPending
-        if (retryDelay > 0) {
-            window.setTimeout(() => {
-                void flushDraftSave()
-            }, retryDelay)
-        } else {
-            void flushDraftSave()
-        }
-    }
-
-    const handleDraftChange = async (content: string, lexicalJson: string) => {
-        pendingDraftRef.current = { content, lexicalJson }
-        void flushDraftSave()
-
-        if (!typingSentRef.current) {
-            typingSentRef.current = true
-            void sendTyping(true).catch(() => { })
-        }
-
-        clearTypingStopTimeout()
-        typingStopTimeoutRef.current = window.setTimeout(() => {
-            typingSentRef.current = false
-            void sendTyping(false).catch(() => { })
-        }, TYPING_STOP_DELAY_MS)
     }
 
     useEffect(() => {
@@ -345,12 +253,17 @@ function EvaluatePage() {
             }
         }
 
-        const removeAllListeners = () => {
-            source?.removeEventListener('message', handleIncomingMessage)
-            source?.removeEventListener('message-update', handleIncomingMessage)
-            source?.removeEventListener('message-delete', handleIncomingMessageDelete)
-            source?.removeEventListener('typing', handleIncomingTyping)
-            source?.removeEventListener('auth-error', handleSseAuthError)
+        const handleIncomingDraftUpdate = (event: MessageEvent<string>) => {
+            try {
+                const draft = JSON.parse(event.data) as { update: string; revision: number }
+                void sync.handleRemoteUpdate(draft.update, draft.revision)
+            } catch {
+            }
+        }
+
+        const handleReady = () => {
+            reconnectAttempt = 0
+            void sync.refresh()
         }
 
         const handleSseAuthError = () => {
@@ -360,6 +273,16 @@ function EvaluatePage() {
             source?.close()
             source = null
             handleSessionExpired()
+        }
+
+        const removeAllListeners = () => {
+            source?.removeEventListener('ready', handleReady)
+            source?.removeEventListener('message', handleIncomingMessage)
+            source?.removeEventListener('message-update', handleIncomingMessage)
+            source?.removeEventListener('message-delete', handleIncomingMessageDelete)
+            source?.removeEventListener('typing', handleIncomingTyping)
+            source?.removeEventListener('draft-update', handleIncomingDraftUpdate)
+            source?.removeEventListener('auth-error', handleSseAuthError)
         }
 
         const connect = () => {
@@ -381,13 +304,12 @@ function EvaluatePage() {
 
             source = new EventSource(streamUrl)
 
-            source.addEventListener('ready', () => {
-                reconnectAttempt = 0
-            })
+            source.addEventListener('ready', handleReady)
             source.addEventListener('message', handleIncomingMessage)
             source.addEventListener('message-update', handleIncomingMessage)
             source.addEventListener('message-delete', handleIncomingMessageDelete)
             source.addEventListener('typing', handleIncomingTyping)
+            source.addEventListener('draft-update', handleIncomingDraftUpdate)
             source.addEventListener('auth-error', handleSseAuthError)
 
             source.onerror = () => {
@@ -407,13 +329,7 @@ function EvaluatePage() {
             source?.close()
             source = null
         }
-    }, [currentUser.id])
-
-    useEffect(() => {
-        return () => {
-            clearTypingStopTimeout()
-        }
-    }, [])
+    }, [currentUser.id, sync])
 
     const typingNames = Object.values(typingUsers)
         .sort((a, b) => a.expiresAt - b.expiresAt)
@@ -425,9 +341,8 @@ function EvaluatePage() {
                 <EvaluatePanel
                     messages={messages}
                     typingUsers={typingNames}
-                    initialDraftContent={loaderData.evaluationState.content}
-                    initialDraftLexicalJson={loaderData.evaluationState.lexicalJson}
-                    onDraftChange={handleDraftChange}
+                    doc={doc}
+                    sync={sync}
                     onSendMessage={handleSendMessage}
                     onEditMessage={handleEditMessage}
                     onDeleteMessage={handleDeleteMessage}

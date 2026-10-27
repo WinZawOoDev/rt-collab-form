@@ -1,22 +1,23 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Pencil, Trash2, Check, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
+import type { Doc } from 'yjs'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { EvaluateLexicalInput } from '@/components/evaluate/evaluate-lexical-input'
+import { EvaluateCollaborativeInput } from '@/components/evaluate/evaluate-collaborative-input'
+import type { TeamDraftSync } from '@/lib/team-draft-sync'
 
 import type { Message } from './types'
 
 type EvaluatePanelProps = {
     messages: Message[]
     typingUsers?: string[]
-    initialDraftContent?: string
-    initialDraftLexicalJson?: string
-    onDraftChange?: (content: string, lexicalJson: string) => Promise<void>
+    doc: Doc
+    sync: TeamDraftSync
     onSendMessage: (content: string) => Promise<boolean>
     onEditMessage?: (id: number, content: string) => Promise<boolean>
     onDeleteMessage?: (id: number) => Promise<boolean>
@@ -29,63 +30,31 @@ type EvaluateMessageFormValues = {
 export function EvaluatePanel({
     messages,
     typingUsers = [],
-    initialDraftContent = '',
-    initialDraftLexicalJson = '',
-    onDraftChange,
+    doc,
+    sync,
     onSendMessage,
     onEditMessage,
     onDeleteMessage,
 }: EvaluatePanelProps) {
-    const [editorResetKey, setEditorResetKey] = useState(0)
-    const [lexicalJson, setLexicalJson] = useState(initialDraftLexicalJson)
     const [editingId, setEditingId] = useState<number | null>(null)
     const [editValue, setEditValue] = useState('')
     const [isSavingEdit, setIsSavingEdit] = useState(false)
     const [deletingId, setDeletingId] = useState<number | null>(null)
 
+    const clearEditorRef = useRef<(() => void) | null>(null)
+
     const form = useForm<EvaluateMessageFormValues>({
         mode: 'onSubmit',
         defaultValues: {
-            content: initialDraftContent,
+            content: '',
         },
     })
-
-    const content = form.watch('content')
-
-    useEffect(() => {
-        form.reset({ content: initialDraftContent })
-        setLexicalJson(initialDraftLexicalJson)
-        setEditorResetKey((previous) => previous + 1)
-    }, [form, initialDraftContent, initialDraftLexicalJson])
-
-    const shouldPersistDraft = useMemo(
-        () => typeof onDraftChange === 'function',
-        [onDraftChange],
-    )
-
-    useEffect(() => {
-        if (!shouldPersistDraft || !onDraftChange) {
-            return
-        }
-
-        const timeoutId = window.setTimeout(() => {
-            void onDraftChange(content ?? '', lexicalJson)
-        }, 600)
-
-        return () => {
-            window.clearTimeout(timeoutId)
-        }
-    }, [content, lexicalJson, onDraftChange, shouldPersistDraft])
 
     const handleSubmit = async (values: EvaluateMessageFormValues) => {
         const isSent = await onSendMessage(values.content.trim())
         if (isSent) {
             form.reset()
-            setLexicalJson('')
-            if (onDraftChange) {
-                await onDraftChange('', '')
-            }
-            setEditorResetKey((previous) => previous + 1)
+            clearEditorRef.current?.()
         }
     }
 
@@ -134,7 +103,7 @@ export function EvaluatePanel({
         <Card className="h-[70vh]">
             <CardHeader>
                 <CardTitle>Team Evaluation</CardTitle>
-                <CardDescription>Message list and real-time evaluation form layout.</CardDescription>
+                <CardDescription>Message list and shared real-time evaluation draft.</CardDescription>
             </CardHeader>
 
             <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
@@ -222,13 +191,14 @@ export function EvaluatePanel({
                                 render={({ field }) => (
                                     <FormItem>
                                         <FormControl>
-                                            <EvaluateLexicalInput
-                                                initialContent={field.value}
-                                                initialLexicalJson={lexicalJson}
-                                                resetKey={editorResetKey}
-                                                onChange={(nextContent, nextLexicalJson) => {
+                                            <EvaluateCollaborativeInput
+                                                doc={doc}
+                                                sync={sync}
+                                                onChange={(nextContent) => {
                                                     field.onChange(nextContent)
-                                                    setLexicalJson(nextLexicalJson)
+                                                }}
+                                                onClearReady={(clear) => {
+                                                    clearEditorRef.current = clear
                                                 }}
                                             />
                                         </FormControl>

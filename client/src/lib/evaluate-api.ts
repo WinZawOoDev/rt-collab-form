@@ -1,8 +1,4 @@
-type ApiUser = {
-  id: number
-  email: string
-  name: string | null
-}
+import type { ApiMessage, ApiUser, TeamDraftState } from '@shared/index'
 
 type LoginResponse = {
   user: ApiUser
@@ -17,28 +13,16 @@ export class ApiUnauthorizedError extends Error {
 }
 
 export class ApiConflictError extends Error {
-  state: EvaluationState
+  state: TeamDraftState
 
-  constructor(state: EvaluationState) {
+  constructor(state: TeamDraftState) {
     super('Draft was modified elsewhere')
     this.name = 'ApiConflictError'
     this.state = state
   }
 }
 
-export type ApiMessage = {
-  id: number
-  author: string
-  content: string
-  timestamp: number
-  authorId: number | null
-}
-
-export type EvaluationState = {
-  content: string
-  lexicalJson: string
-  revision: number
-}
+export type { ApiMessage, ApiUser, TeamDraftState }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000'
 const AUTH_TOKEN_STORAGE_KEY = 'evaluate-auth-token'
@@ -261,8 +245,8 @@ export async function sendTyping(isTyping: boolean) {
   }
 }
 
-export async function getEvaluationState() {
-  const response = await fetch(`${API_BASE_URL}/api/evaluation-state`, {
+export async function getTeamDraft(): Promise<TeamDraftState> {
+  const response = await fetch(`${API_BASE_URL}/api/team-draft`, {
     headers: {
       ...getAuthHeaders(),
     },
@@ -273,21 +257,20 @@ export async function getEvaluationState() {
   }
 
   if (!response.ok) {
-    throw new Error('Unable to fetch evaluation state.')
+    throw new Error('Unable to fetch team draft.')
   }
 
-  const data = (await response.json()) as { state: EvaluationState }
-  return data.state
+  return (await response.json()) as TeamDraftState
 }
 
-export async function saveEvaluationState(state: Omit<EvaluationState, 'revision'>, baseRevision?: number) {
-  const response = await fetch(`${API_BASE_URL}/api/evaluation-state`, {
-    method: 'PUT',
+export async function saveTeamDraftUpdate(update: string, baseRevision: number) {
+  const response = await fetch(`${API_BASE_URL}/api/team-draft`, {
+    method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeaders(),
     },
-    body: JSON.stringify({ ...state, baseRevision }),
+    body: JSON.stringify({ update, baseRevision }),
   })
 
   if (response.status === 401) {
@@ -295,16 +278,16 @@ export async function saveEvaluationState(state: Omit<EvaluationState, 'revision
   }
 
   if (response.status === 409) {
-    const data = (await response.json()) as { state: EvaluationState }
-    throw new ApiConflictError(data.state)
+    const data = (await response.json()) as { error: string } & TeamDraftState
+    throw new ApiConflictError({ state: data.state, revision: data.revision })
   }
 
   if (!response.ok) {
-    throw new Error('Unable to save evaluation state.')
+    throw new Error('Unable to save team draft.')
   }
 
-  const data = (await response.json()) as { state: EvaluationState }
-  return data.state
+  const data = (await response.json()) as { revision: number }
+  return data.revision
 }
 
 export function getMessagesStreamUrl() {

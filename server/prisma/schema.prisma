@@ -14,30 +14,25 @@ datasource db {
 }
 
 model User {
-  id            Int            @id @default(autoincrement())
-  email         String         @unique
-  name          String?
-  posts         Post[]
-  evaluateDraft EvaluateDraft?
+  id    Int    @id @default(autoincrement())
+  email String @unique
+  name  String?
+  posts Post[]
 }
 
 model Post {
   id        Int     @id @default(autoincrement())
-  title     String
+  title     String  @default("")
   content   String?
   published Boolean @default(false)
   author    User?   @relation(fields: [authorId], references: [id])
   authorId  Int?
 }
 
-model EvaluateDraft {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @unique
-  content     String   @default("")
-  lexicalJson String   @default("")
-  revision    Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+model TeamDraft {
+  id        Int      @id @default(1)
+  state     String   @default("")
+  revision  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
