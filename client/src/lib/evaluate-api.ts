@@ -203,6 +203,64 @@ export async function sendMessage(content: string) {
   return data.message
 }
 
+export async function updateMessage(id: number, content: string) {
+  const response = await fetch(`${API_BASE_URL}/api/messages/${id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({ content }),
+  })
+
+  if (response.status === 401) {
+    throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to update message.')
+  }
+
+  const data = (await response.json()) as { message: ApiMessage }
+  return data.message
+}
+
+export async function deleteMessage(id: number) {
+  const response = await fetch(`${API_BASE_URL}/api/messages/${id}`, {
+    method: 'DELETE',
+    headers: {
+      ...getAuthHeaders(),
+    },
+  })
+
+  if (response.status === 401) {
+    throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to delete message.')
+  }
+}
+
+export async function sendTyping(isTyping: boolean) {
+  const response = await fetch(`${API_BASE_URL}/api/typing`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({ isTyping }),
+  })
+
+  if (response.status === 401) {
+    throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to send typing indicator.')
+  }
+}
+
 export async function getEvaluationState() {
   const response = await fetch(`${API_BASE_URL}/api/evaluation-state`, {
     headers: {

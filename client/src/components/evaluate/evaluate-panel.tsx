@@ -1,20 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { FormEvent } from 'react'
+import { Pencil, Trash2, Check, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
 import { EvaluateLexicalInput } from '@/components/evaluate/evaluate-lexical-input'
 
 import type { Message } from './types'
 
 type EvaluatePanelProps = {
     messages: Message[]
-    disableSend?: boolean
+    typingUsers?: string[]
     initialDraftContent?: string
     initialDraftLexicalJson?: string
     onDraftChange?: (content: string, lexicalJson: string) => Promise<void>
     onSendMessage: (content: string) => Promise<boolean>
+    onEditMessage?: (id: number, content: string) => Promise<boolean>
+    onDeleteMessage?: (id: number) => Promise<boolean>
 }
 
 type EvaluateMessageFormValues = {
@@ -23,14 +28,20 @@ type EvaluateMessageFormValues = {
 
 export function EvaluatePanel({
     messages,
-    disableSend = false,
+    typingUsers = [],
     initialDraftContent = '',
     initialDraftLexicalJson = '',
     onDraftChange,
     onSendMessage,
+    onEditMessage,
+    onDeleteMessage,
 }: EvaluatePanelProps) {
     const [editorResetKey, setEditorResetKey] = useState(0)
     const [lexicalJson, setLexicalJson] = useState(initialDraftLexicalJson)
+    const [editingId, setEditingId] = useState<number | null>(null)
+    const [editValue, setEditValue] = useState('')
+    const [isSavingEdit, setIsSavingEdit] = useState(false)
+    const [deletingId, setDeletingId] = useState<number | null>(null)
 
     const form = useForm<EvaluateMessageFormValues>({
         mode: 'onSubmit',
@@ -48,8 +59,8 @@ export function EvaluatePanel({
     }, [form, initialDraftContent, initialDraftLexicalJson])
 
     const shouldPersistDraft = useMemo(
-        () => !disableSend && typeof onDraftChange === 'function',
-        [disableSend, onDraftChange],
+        () => typeof onDraftChange === 'function',
+        [onDraftChange],
     )
 
     useEffect(() => {
@@ -78,6 +89,47 @@ export function EvaluatePanel({
         }
     }
 
+    const startEditing = (message: Message) => {
+        setEditingId(message.id)
+        setEditValue(message.content)
+    }
+
+    const cancelEditing = () => {
+        setEditingId(null)
+        setEditValue('')
+    }
+
+    const handleEditSubmit = async (event: FormEvent) => {
+        event.preventDefault()
+
+        if (editingId === null || !onEditMessage || isSavingEdit) {
+            return
+        }
+
+        const trimmed = editValue.trim()
+        if (!trimmed) {
+            return
+        }
+
+        setIsSavingEdit(true)
+        const updated = await onEditMessage(editingId, trimmed)
+        setIsSavingEdit(false)
+
+        if (updated) {
+            cancelEditing()
+        }
+    }
+
+    const handleDelete = async (id: number) => {
+        if (!onDeleteMessage || deletingId !== null) {
+            return
+        }
+
+        setDeletingId(id)
+        await onDeleteMessage(id)
+        setDeletingId(null)
+    }
+
     return (
         <Card className="h-[70vh]">
             <CardHeader>
@@ -97,12 +149,61 @@ export function EvaluatePanel({
                                 }
                             >
                                 <p className="text-xs font-medium">{message.author}</p>
-                                <p className="mt-1 text-sm">{message.content}</p>
+
+                                {editingId === message.id ? (
+                                    <form className="mt-1 flex items-center gap-1" onSubmit={handleEditSubmit}>
+                                        <Input
+                                            value={editValue}
+                                            onChange={(event) => setEditValue(event.target.value)}
+                                            className="h-8 text-sm"
+                                            autoFocus
+                                        />
+                                        <Button type="submit" size="icon-xs" variant="ghost" disabled={isSavingEdit}>
+                                            <Check />
+                                        </Button>
+                                        <Button type="button" size="icon-xs" variant="ghost" onClick={cancelEditing}>
+                                            <X />
+                                        </Button>
+                                    </form>
+                                ) : (
+                                    <p className="mt-1 text-sm">{message.content}</p>
+                                )}
+
                                 <p className="mt-2 text-right text-[11px] opacity-70">{message.timestamp}</p>
+
+                                {message.mine && editingId !== message.id ? (
+                                    <div className="mt-1 flex justify-end gap-1">
+                                        <Button
+                                            type="button"
+                                            size="icon-xs"
+                                            variant="ghost"
+                                            aria-label="Edit message"
+                                            onClick={() => startEditing(message)}
+                                        >
+                                            <Pencil />
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            size="icon-xs"
+                                            variant="ghost"
+                                            aria-label="Delete message"
+                                            disabled={deletingId === message.id}
+                                            onClick={() => void handleDelete(message.id)}
+                                        >
+                                            <Trash2 />
+                                        </Button>
+                                    </div>
+                                ) : null}
                             </div>
                         </div>
                     ))}
                 </section>
+
+                {typingUsers.length > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                        {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing…
+                    </p>
+                ) : null}
 
                 <Form {...form}>
                     <form className="flex items-start gap-2" onSubmit={form.handleSubmit(handleSubmit)}>
@@ -137,7 +238,7 @@ export function EvaluatePanel({
                             />
                         </div>
 
-                        <Button type="submit" disabled={disableSend || form.formState.isSubmitting}>
+                        <Button type="submit" disabled={form.formState.isSubmitting}>
                             Send
                         </Button>
                     </form>

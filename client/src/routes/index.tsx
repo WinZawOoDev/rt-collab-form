@@ -1,9 +1,7 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 
 import { AuthCard, type AuthFormValues } from '@/components/evaluate/auth-card'
-import { Button } from '@/components/ui/button'
 import {
   clearAuthToken,
   getCurrentUser,
@@ -59,11 +57,6 @@ function App() {
           onSubmit={handleAuthSubmit}
           onLogout={() => { }}
         />
-        <div className="mt-3 flex justify-center">
-          <Button asChild variant="link">
-            <Link to="/evaluate">Go to Evaluation</Link>
-          </Button>
-        </div>
         {authError ? <p className="mt-4 text-center text-sm text-destructive">{authError}</p> : null}
       </main>
     </div>

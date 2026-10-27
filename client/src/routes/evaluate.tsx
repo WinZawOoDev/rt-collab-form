@@ -7,6 +7,7 @@ import {
     ApiConflictError,
     ApiUnauthorizedError,
     clearAuthToken,
+    deleteMessage,
     getEvaluationState,
     getCurrentUser,
     getMessages,
@@ -14,6 +15,8 @@ import {
     hydrateAuthToken,
     saveEvaluationState,
     sendMessage,
+    sendTyping,
+    updateMessage,
 } from '@/lib/evaluate-api'
 import type { ApiMessage, EvaluationState } from '@/lib/evaluate-api'
 
@@ -29,21 +32,15 @@ type LoaderData = {
     evaluationState: EvaluationState
 }
 
-const BYPASS_CLIENT_ROUTE_AUTH = true
-const BYPASS_USER: CurrentUser = {
-    id: 0,
-    email: 'guest@local',
-    name: 'Guest',
-}
-
-const BYPASS_EVALUATION_STATE: EvaluationState = {
-    content: '',
-    lexicalJson: '',
-    revision: 0,
+type TypingUser = {
+    name: string
+    expiresAt: number
 }
 
 const MAX_DRAFT_SAVE_RETRIES = 3
 const DRAFT_SAVE_RETRY_DELAY_MS = 2000
+const TYPING_DISPLAY_MS = 4000
+const TYPING_STOP_DELAY_MS = 3000
 
 function mapTimestamp(value: number) {
     return `#${value}`
@@ -77,24 +74,12 @@ function upsertMessage(previous: Message[], next: Message): Message[] {
 
 export const Route = createFileRoute('/evaluate')({
     beforeLoad: async () => {
-        if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return
-        }
-
         const token = hydrateAuthToken()
         if (!token) {
             throw redirect({ to: '/' })
         }
     },
     loader: async () => {
-        if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return {
-                user: BYPASS_USER,
-                messages: [],
-                evaluationState: BYPASS_EVALUATION_STATE,
-            } satisfies LoaderData
-        }
-
         try {
             const [user, messages, evaluationState] = await Promise.all([
                 getCurrentUser(),
@@ -118,17 +103,18 @@ function EvaluatePage() {
     const [messages, setMessages] = useState<Message[]>(
         mapServerMessages(loaderData.messages, loaderData.user.id),
     )
+    const [typingUsers, setTypingUsers] = useState<Record<number, TypingUser>>({})
 
     const draftRevisionRef = useRef(loaderData.evaluationState.revision)
     const pendingDraftRef = useRef<Omit<EvaluationState, 'revision'> | null>(null)
     const draftSaveInFlightRef = useRef(false)
     const draftRetryCountRef = useRef(0)
 
-    const handleSessionExpired = () => {
-        if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return
-        }
+    const typingSentRef = useRef(false)
+    const typingStopTimeoutRef = useRef<number | null>(null)
+    const typingDisplayTimeoutsRef = useRef<Record<number, number>>({})
 
+    const handleSessionExpired = () => {
         clearAuthToken()
         setCurrentUser(loaderData.user)
         setMessages([])
@@ -136,10 +122,6 @@ function EvaluatePage() {
     }
 
     const handleSendMessage = async (content: string): Promise<boolean> => {
-        if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return false
-        }
-
         try {
             const created = await sendMessage(content)
             const nextMessage: Message = {
@@ -157,6 +139,79 @@ function EvaluatePage() {
                 handleSessionExpired()
             }
             return false
+        }
+    }
+
+    const handleEditMessage = async (id: number, content: string): Promise<boolean> => {
+        try {
+            const updated = await updateMessage(id, content)
+            setMessages((previous) => upsertMessage(previous, mapServerMessage(updated, currentUser.id)))
+            return true
+        } catch (error) {
+            if (error instanceof ApiUnauthorizedError) {
+                handleSessionExpired()
+            }
+            return false
+        }
+    }
+
+    const handleDeleteMessage = async (id: number): Promise<boolean> => {
+        try {
+            await deleteMessage(id)
+            setMessages((previous) => previous.filter((message) => message.id !== id))
+            return true
+        } catch (error) {
+            if (error instanceof ApiUnauthorizedError) {
+                handleSessionExpired()
+            }
+            return false
+        }
+    }
+
+    const clearTypingStopTimeout = () => {
+        if (typingStopTimeoutRef.current !== null) {
+            window.clearTimeout(typingStopTimeoutRef.current)
+            typingStopTimeoutRef.current = null
+        }
+    }
+
+    const clearTypingDisplayTimeout = (userId: number) => {
+        const timeoutId = typingDisplayTimeoutsRef.current[userId]
+        if (timeoutId !== undefined) {
+            window.clearTimeout(timeoutId)
+            delete typingDisplayTimeoutsRef.current[userId]
+        }
+    }
+
+    const removeTypingUser = (userId: number) => {
+        clearTypingDisplayTimeout(userId)
+        setTypingUsers((previous) => {
+            const next = { ...previous }
+            delete next[userId]
+            return next
+        })
+    }
+
+    const markTypingUser = (userId: number, name: string) => {
+        clearTypingDisplayTimeout(userId)
+        setTypingUsers((previous) => ({
+            ...previous,
+            [userId]: { name, expiresAt: Date.now() + TYPING_DISPLAY_MS },
+        }))
+        typingDisplayTimeoutsRef.current[userId] = window.setTimeout(() => {
+            removeTypingUser(userId)
+        }, TYPING_DISPLAY_MS)
+    }
+
+    const handleTypingEvent = (userId: number, name: string, isTyping: boolean) => {
+        if (userId === currentUser.id) {
+            return
+        }
+
+        if (isTyping) {
+            markTypingUser(userId, name)
+        } else {
+            removeTypingUser(userId)
         }
     }
 
@@ -221,19 +276,22 @@ function EvaluatePage() {
     }
 
     const handleDraftChange = async (content: string, lexicalJson: string) => {
-        if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return
-        }
-
         pendingDraftRef.current = { content, lexicalJson }
         void flushDraftSave()
+
+        if (!typingSentRef.current) {
+            typingSentRef.current = true
+            void sendTyping(true).catch(() => { })
+        }
+
+        clearTypingStopTimeout()
+        typingStopTimeoutRef.current = window.setTimeout(() => {
+            typingSentRef.current = false
+            void sendTyping(false).catch(() => { })
+        }, TYPING_STOP_DELAY_MS)
     }
 
     useEffect(() => {
-        if (BYPASS_CLIENT_ROUTE_AUTH) {
-            return
-        }
-
         let isCancelled = false
         let source: EventSource | null = null
         let reconnectTimeoutId: number | null = null
@@ -271,11 +329,34 @@ function EvaluatePage() {
             }
         }
 
+        const handleIncomingMessageDelete = (event: MessageEvent<string>) => {
+            try {
+                const deleted = JSON.parse(event.data) as { id: number }
+                setMessages((previous) => previous.filter((message) => message.id !== deleted.id))
+            } catch {
+            }
+        }
+
+        const handleIncomingTyping = (event: MessageEvent<string>) => {
+            try {
+                const typing = JSON.parse(event.data) as { userId: number; name: string; isTyping: boolean }
+                handleTypingEvent(typing.userId, typing.name, typing.isTyping)
+            } catch {
+            }
+        }
+
+        const removeAllListeners = () => {
+            source?.removeEventListener('message', handleIncomingMessage)
+            source?.removeEventListener('message-update', handleIncomingMessage)
+            source?.removeEventListener('message-delete', handleIncomingMessageDelete)
+            source?.removeEventListener('typing', handleIncomingTyping)
+            source?.removeEventListener('auth-error', handleSseAuthError)
+        }
+
         const handleSseAuthError = () => {
             isCancelled = true
             clearReconnectTimeout()
-            source?.removeEventListener('message', handleIncomingMessage)
-            source?.removeEventListener('auth-error', handleSseAuthError)
+            removeAllListeners()
             source?.close()
             source = null
             handleSessionExpired()
@@ -304,11 +385,13 @@ function EvaluatePage() {
                 reconnectAttempt = 0
             })
             source.addEventListener('message', handleIncomingMessage)
+            source.addEventListener('message-update', handleIncomingMessage)
+            source.addEventListener('message-delete', handleIncomingMessageDelete)
+            source.addEventListener('typing', handleIncomingTyping)
             source.addEventListener('auth-error', handleSseAuthError)
 
             source.onerror = () => {
-                source?.removeEventListener('message', handleIncomingMessage)
-                source?.removeEventListener('auth-error', handleSseAuthError)
+                removeAllListeners()
                 source?.close()
                 source = null
                 scheduleReconnect()
@@ -320,23 +403,34 @@ function EvaluatePage() {
         return () => {
             isCancelled = true
             clearReconnectTimeout()
-            source?.removeEventListener('message', handleIncomingMessage)
-            source?.removeEventListener('auth-error', handleSseAuthError)
+            removeAllListeners()
             source?.close()
             source = null
         }
     }, [currentUser.id])
+
+    useEffect(() => {
+        return () => {
+            clearTypingStopTimeout()
+        }
+    }, [])
+
+    const typingNames = Object.values(typingUsers)
+        .sort((a, b) => a.expiresAt - b.expiresAt)
+        .map((typingUser) => typingUser.name)
 
     return (
         <div className="min-h-screen bg-background px-4 py-10 md:px-8">
             <main className="mx-auto w-full max-w-5xl space-y-3">
                 <EvaluatePanel
                     messages={messages}
-                    disableSend={false}
+                    typingUsers={typingNames}
                     initialDraftContent={loaderData.evaluationState.content}
                     initialDraftLexicalJson={loaderData.evaluationState.lexicalJson}
                     onDraftChange={handleDraftChange}
                     onSendMessage={handleSendMessage}
+                    onEditMessage={handleEditMessage}
+                    onDeleteMessage={handleDeleteMessage}
                 />
             </main>
         </div>

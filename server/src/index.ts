@@ -18,7 +18,30 @@ type ContextWithPrisma = {
 
 const app = new Hono<ContextWithPrisma>()
 const messageStreams = new Set<SSEStreamingApi>()
-const jwtSecret = process.env.JWT_SECRET ?? 'dev-jwt-secret'
+
+function resolveJwtSecret() {
+  const secret = process.env.JWT_SECRET
+  const isProduction = process.env.NODE_ENV === 'production'
+
+  if (isProduction) {
+    if (!secret) {
+      throw new Error('JWT_SECRET environment variable is required in production')
+    }
+    if (secret.length < 32) {
+      throw new Error('JWT_SECRET must be at least 32 characters long in production')
+    }
+    return secret
+  }
+
+  if (!secret) {
+    console.warn('JWT_SECRET is not set, falling back to an insecure development secret')
+    return 'dev-jwt-secret'
+  }
+
+  return secret
+}
+
+const jwtSecret = resolveJwtSecret()
 
 type EvaluateMessagePayload = {
   id: number
@@ -26,6 +49,23 @@ type EvaluateMessagePayload = {
   content: string
   timestamp: number
   authorId: number | null
+}
+
+type PostWithAuthor = {
+  id: number
+  content: string | null
+  authorId: number | null
+  author: { name: string | null; email: string } | null
+}
+
+function mapPostToMessage(post: PostWithAuthor): EvaluateMessagePayload {
+  return {
+    id: post.id,
+    author: post.author?.name || post.author?.email || 'Unknown',
+    content: post.content || '',
+    timestamp: post.id,
+    authorId: post.authorId,
+  }
 }
 
 function getBearerToken(header?: string | null) {
@@ -63,14 +103,14 @@ async function verifyJwtToken(token: string) {
   }
 }
 
-async function broadcastMessage(message: EvaluateMessagePayload) {
-  const payload = JSON.stringify(message)
+async function broadcast(event: string, data: unknown) {
+  const payload = JSON.stringify(data)
 
   await Promise.all(
     [...messageStreams].map(async (stream) => {
       try {
         await stream.writeSSE({
-          event: 'message',
+          event,
           data: payload,
         })
       } catch {
@@ -84,7 +124,7 @@ app.use(
   '*',
   cors({
     origin: ['http://localhost:3000'],
-    allowMethods: ['GET', 'POST', 'PUT', 'OPTIONS'],
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
   }),
 )
@@ -201,13 +241,7 @@ app.get('/api/messages', withPrisma, async (c) => {
     orderBy: { id: 'asc' },
   })
 
-  const messages = posts.map((post) => ({
-    id: post.id,
-    author: post.author?.name || post.author?.email || 'Unknown',
-    content: post.content || '',
-    timestamp: post.id,
-    authorId: post.authorId,
-  }))
+  const messages = posts.map(mapPostToMessage)
 
   return c.json({ messages })
 })
@@ -322,17 +356,86 @@ app.post('/api/messages', withPrisma, async (c) => {
     include: { author: true },
   })
 
-  const payload = {
-    id: message.id,
-    author: message.author?.name || message.author?.email || 'Unknown',
-    content: message.content || '',
-    timestamp: message.id,
-    authorId: message.authorId,
-  }
+  const payload = mapPostToMessage(message)
 
-  await broadcastMessage(payload)
+  await broadcast('message', payload)
 
   return c.json({ message: payload })
+})
+
+app.put('/api/messages/:id', withPrisma, async (c) => {
+  const prisma = c.get('prisma')
+  const authUser = c.get('authUser')
+
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) {
+    return c.json({ error: 'Invalid message id' }, 400)
+  }
+
+  const body = await c.req.json<{ content: string }>()
+  const content = body.content?.trim()
+  if (!content) {
+    return c.json({ error: 'Content is required' }, 400)
+  }
+
+  const post = await prisma.post.findUnique({ where: { id }, include: { author: true } })
+  if (!post || !post.published) {
+    return c.json({ error: 'Message not found' }, 404)
+  }
+
+  if (post.authorId !== authUser.id) {
+    return c.json({ error: 'You can only edit your own messages' }, 403)
+  }
+
+  const updated = await prisma.post.update({
+    where: { id },
+    data: { content },
+    include: { author: true },
+  })
+
+  const payload = mapPostToMessage(updated)
+
+  await broadcast('message-update', payload)
+
+  return c.json({ message: payload })
+})
+
+app.delete('/api/messages/:id', withPrisma, async (c) => {
+  const prisma = c.get('prisma')
+  const authUser = c.get('authUser')
+
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) {
+    return c.json({ error: 'Invalid message id' }, 400)
+  }
+
+  const post = await prisma.post.findUnique({ where: { id } })
+  if (!post || !post.published) {
+    return c.json({ error: 'Message not found' }, 404)
+  }
+
+  if (post.authorId !== authUser.id) {
+    return c.json({ error: 'You can only delete your own messages' }, 403)
+  }
+
+  await prisma.post.delete({ where: { id } })
+
+  await broadcast('message-delete', { id })
+
+  return c.json({ ok: true })
+})
+
+app.post('/api/typing', async (c) => {
+  const authUser = c.get('authUser')
+  const body = await c.req.json<{ isTyping?: boolean }>()
+
+  await broadcast('typing', {
+    userId: authUser.id,
+    name: authUser.name || authUser.email,
+    isTyping: Boolean(body.isTyping),
+  })
+
+  return c.json({ ok: true })
 })
 
 export default app
