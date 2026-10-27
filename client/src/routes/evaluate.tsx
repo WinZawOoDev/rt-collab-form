@@ -1,10 +1,10 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { EvaluatePanel } from '@/components/evaluate/evaluate-panel'
 import type { Message } from '@/components/evaluate/types'
-import { Button } from '@/components/ui/button'
 import {
+    ApiConflictError,
     ApiUnauthorizedError,
     clearAuthToken,
     getEvaluationState,
@@ -15,7 +15,7 @@ import {
     saveEvaluationState,
     sendMessage,
 } from '@/lib/evaluate-api'
-import type { ApiMessage } from '@/lib/evaluate-api'
+import type { ApiMessage, EvaluationState } from '@/lib/evaluate-api'
 
 type CurrentUser = {
     id: number
@@ -26,10 +26,7 @@ type CurrentUser = {
 type LoaderData = {
     user: CurrentUser
     messages: Awaited<ReturnType<typeof getMessages>>
-    evaluationState: {
-        content: string
-        lexicalJson: string
-    }
+    evaluationState: EvaluationState
 }
 
 const BYPASS_CLIENT_ROUTE_AUTH = true
@@ -39,10 +36,14 @@ const BYPASS_USER: CurrentUser = {
     name: 'Guest',
 }
 
-const BYPASS_EVALUATION_STATE = {
+const BYPASS_EVALUATION_STATE: EvaluationState = {
     content: '',
     lexicalJson: '',
+    revision: 0,
 }
+
+const MAX_DRAFT_SAVE_RETRIES = 3
+const DRAFT_SAVE_RETRY_DELAY_MS = 2000
 
 function mapTimestamp(value: number) {
     return `#${value}`
@@ -117,36 +118,29 @@ function EvaluatePage() {
     const [messages, setMessages] = useState<Message[]>(
         mapServerMessages(loaderData.messages, loaderData.user.id),
     )
-    const [draftContent, setDraftContent] = useState(loaderData.evaluationState.content)
-    const [draftLexicalJson, setDraftLexicalJson] = useState(loaderData.evaluationState.lexicalJson)
-    const [evaluateError, setEvaluateError] = useState('')
+
+    const draftRevisionRef = useRef(loaderData.evaluationState.revision)
+    const pendingDraftRef = useRef<Omit<EvaluationState, 'revision'> | null>(null)
+    const draftSaveInFlightRef = useRef(false)
+    const draftRetryCountRef = useRef(0)
 
     const handleSessionExpired = () => {
         if (BYPASS_CLIENT_ROUTE_AUTH) {
-            setEvaluateError('Auth bypass mode is enabled for UI checking.')
             return
         }
 
         clearAuthToken()
         setCurrentUser(loaderData.user)
         setMessages([])
-        setEvaluateError('Your session expired. Please sign in again.')
-        void navigate({ to: '/' })
-    }
-
-    const handleLogout = () => {
-        clearAuthToken()
         void navigate({ to: '/' })
     }
 
     const handleSendMessage = async (content: string): Promise<boolean> => {
         if (BYPASS_CLIENT_ROUTE_AUTH) {
-            setEvaluateError('Send is disabled while client route auth bypass is enabled.')
             return false
         }
 
         try {
-            setEvaluateError('')
             const created = await sendMessage(content)
             const nextMessage: Message = {
                 id: created.id,
@@ -161,10 +155,68 @@ function EvaluatePage() {
         } catch (error) {
             if (error instanceof ApiUnauthorizedError) {
                 handleSessionExpired()
-            } else {
-                setEvaluateError('Message could not be sent. Please try again.')
             }
             return false
+        }
+    }
+
+    const flushDraftSave = async () => {
+        if (draftSaveInFlightRef.current) {
+            return
+        }
+
+        const pending = pendingDraftRef.current
+        if (!pending) {
+            return
+        }
+
+        pendingDraftRef.current = null
+        draftSaveInFlightRef.current = true
+
+        let nextPending: Omit<EvaluationState, 'revision'> | null = null
+        let retryDelay = 0
+
+        try {
+            const saved = await saveEvaluationState(pending, draftRevisionRef.current)
+            draftRevisionRef.current = saved.revision
+            draftRetryCountRef.current = 0
+            nextPending = pendingDraftRef.current
+        } catch (error) {
+            if (error instanceof ApiUnauthorizedError) {
+                pendingDraftRef.current = null
+                draftRetryCountRef.current = 0
+                handleSessionExpired()
+                return
+            }
+
+            if (error instanceof ApiConflictError) {
+                draftRevisionRef.current = error.state.revision
+            } else {
+                retryDelay = DRAFT_SAVE_RETRY_DELAY_MS
+            }
+
+            if (draftRetryCountRef.current < MAX_DRAFT_SAVE_RETRIES) {
+                draftRetryCountRef.current += 1
+                nextPending = pendingDraftRef.current ?? pending
+            } else {
+                pendingDraftRef.current = pendingDraftRef.current ?? pending
+                draftRetryCountRef.current = 0
+            }
+        } finally {
+            draftSaveInFlightRef.current = false
+        }
+
+        if (!nextPending) {
+            return
+        }
+
+        pendingDraftRef.current = nextPending
+        if (retryDelay > 0) {
+            window.setTimeout(() => {
+                void flushDraftSave()
+            }, retryDelay)
+        } else {
+            void flushDraftSave()
         }
     }
 
@@ -173,16 +225,8 @@ function EvaluatePage() {
             return
         }
 
-        setDraftContent(content)
-        setDraftLexicalJson(lexicalJson)
-
-        try {
-            await saveEvaluationState({ content, lexicalJson })
-        } catch (error) {
-            if (error instanceof ApiUnauthorizedError) {
-                handleSessionExpired()
-            }
-        }
+        pendingDraftRef.current = { content, lexicalJson }
+        void flushDraftSave()
     }
 
     useEffect(() => {
@@ -286,22 +330,11 @@ function EvaluatePage() {
     return (
         <div className="min-h-screen bg-background px-4 py-10 md:px-8">
             <main className="mx-auto w-full max-w-5xl space-y-3">
-                <div className="flex items-center justify-between rounded-xl border bg-card px-4 py-3">
-                    <p className="text-sm text-muted-foreground">
-                        Signed in as <span className="font-medium text-foreground">{currentUser.name || currentUser.email}</span>
-                    </p>
-                    <Button type="button" variant="secondary" onClick={handleLogout}>
-                        Logout
-                    </Button>
-                </div>
-
-                {evaluateError ? <p className="text-sm text-destructive">{evaluateError}</p> : null}
-
                 <EvaluatePanel
                     messages={messages}
-                    disableSend={BYPASS_CLIENT_ROUTE_AUTH}
-                    initialDraftContent={draftContent}
-                    initialDraftLexicalJson={draftLexicalJson}
+                    disableSend={false}
+                    initialDraftContent={loaderData.evaluationState.content}
+                    initialDraftLexicalJson={loaderData.evaluationState.lexicalJson}
                     onDraftChange={handleDraftChange}
                     onSendMessage={handleSendMessage}
                 />

@@ -16,6 +16,16 @@ export class ApiUnauthorizedError extends Error {
   }
 }
 
+export class ApiConflictError extends Error {
+  state: EvaluationState
+
+  constructor(state: EvaluationState) {
+    super('Draft was modified elsewhere')
+    this.name = 'ApiConflictError'
+    this.state = state
+  }
+}
+
 export type ApiMessage = {
   id: number
   author: string
@@ -27,6 +37,7 @@ export type ApiMessage = {
 export type EvaluationState = {
   content: string
   lexicalJson: string
+  revision: number
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000'
@@ -211,18 +222,23 @@ export async function getEvaluationState() {
   return data.state
 }
 
-export async function saveEvaluationState(state: EvaluationState) {
+export async function saveEvaluationState(state: Omit<EvaluationState, 'revision'>, baseRevision?: number) {
   const response = await fetch(`${API_BASE_URL}/api/evaluation-state`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeaders(),
     },
-    body: JSON.stringify(state),
+    body: JSON.stringify({ ...state, baseRevision }),
   })
 
   if (response.status === 401) {
     throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (response.status === 409) {
+    const data = (await response.json()) as { state: EvaluationState }
+    throw new ApiConflictError(data.state)
   }
 
   if (!response.ok) {

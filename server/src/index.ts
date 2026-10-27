@@ -227,6 +227,7 @@ app.get('/api/evaluation-state', withPrisma, async (c) => {
     state: {
       content: draft?.content ?? '',
       lexicalJson: draft?.lexicalJson ?? '',
+      revision: draft?.revision ?? 0,
     },
   })
 })
@@ -234,7 +235,7 @@ app.get('/api/evaluation-state', withPrisma, async (c) => {
 app.put('/api/evaluation-state', withPrisma, async (c) => {
   const prisma = c.get('prisma')
   const authUser = c.get('authUser')
-  const body = await c.req.json<{ content?: string; lexicalJson?: string }>()
+  const body = await c.req.json<{ content?: string; lexicalJson?: string; baseRevision?: number }>()
 
   const user = await prisma.user.findUnique({ where: { email: authUser.email } })
   if (!user) {
@@ -243,24 +244,56 @@ app.put('/api/evaluation-state', withPrisma, async (c) => {
 
   const content = body.content ?? ''
   const lexicalJson = body.lexicalJson ?? ''
+  const baseRevision = body.baseRevision
 
-  const state = await prisma.evaluateDraft.upsert({
-    where: { userId: user.id },
-    update: { content, lexicalJson },
-    create: {
-      userId: user.id,
-      content,
-      lexicalJson,
-    },
+  if (baseRevision !== undefined && (!Number.isInteger(baseRevision) || baseRevision < 0)) {
+    return c.json({ error: 'Invalid baseRevision' }, 400)
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const draft = await tx.evaluateDraft.findUnique({ where: { userId: user.id } })
+    const currentRevision = draft?.revision ?? 0
+
+    if (baseRevision !== undefined && baseRevision !== currentRevision) {
+      return {
+        conflict: true,
+        state: {
+          content: draft?.content ?? '',
+          lexicalJson: draft?.lexicalJson ?? '',
+          revision: currentRevision,
+        },
+      }
+    }
+
+    const saved = draft
+      ? await tx.evaluateDraft.update({
+          where: { userId: user.id },
+          data: { content, lexicalJson, revision: { increment: 1 } },
+        })
+      : await tx.evaluateDraft.create({
+          data: {
+            userId: user.id,
+            content,
+            lexicalJson,
+            revision: 1,
+          },
+        })
+
+    return {
+      conflict: false,
+      state: {
+        content: saved.content,
+        lexicalJson: saved.lexicalJson,
+        revision: saved.revision,
+      },
+    }
   })
 
-  return c.json({
-    state: {
-      content: state.content,
-      lexicalJson: state.lexicalJson,
-      updatedAt: state.updatedAt,
-    },
-  })
+  if (result.conflict) {
+    return c.json({ error: 'Draft was modified elsewhere', state: result.state }, 409)
+  }
+
+  return c.json({ state: result.state })
 })
 
 app.post('/api/messages', withPrisma, async (c) => {
