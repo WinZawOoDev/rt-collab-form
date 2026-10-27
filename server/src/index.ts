@@ -6,6 +6,8 @@ import * as Y from 'yjs'
 import type { PrismaClient } from './generated/prisma/client'
 import type {
   ApiMessage,
+  AwarenessState,
+  SseAwarenessPayload,
   SseDraftUpdatePayload,
   SseMessageDeletePayload,
   SseTypingPayload,
@@ -27,6 +29,7 @@ type ContextWithPrisma = {
 
 const app = new Hono<ContextWithPrisma>()
 const messageStreams = new Map<SSEStreamingApi, number>()
+const awarenessStates = new Map<number, AwarenessState>()
 
 function resolveJwtSecret() {
   const secret = process.env.JWT_SECRET
@@ -223,6 +226,17 @@ app.get('/events/messages', (c) => {
       data: 'connected',
     })
 
+    for (const [userId, state] of awarenessStates) {
+      if (userId === authUser.id) {
+        continue
+      }
+      const payload: SseAwarenessPayload = { userId, state }
+      await stream.writeSSE({
+        event: 'awareness',
+        data: JSON.stringify(payload),
+      })
+    }
+
     const heartbeatId = setInterval(() => {
       void stream.writeSSE({ event: 'ping', data: 'keepalive' })
     }, 15000)
@@ -231,6 +245,14 @@ app.get('/events/messages', (c) => {
       stream.onAbort(() => {
         clearInterval(heartbeatId)
         messageStreams.delete(stream)
+
+        const hasOtherStreams = [...messageStreams.values()].some((userId) => userId === authUser.id)
+        if (!hasOtherStreams && awarenessStates.has(authUser.id)) {
+          awarenessStates.delete(authUser.id)
+          const payload: SseAwarenessPayload = { userId: authUser.id, state: null }
+          void broadcast('awareness', payload)
+        }
+
         resolve()
       })
     })
@@ -396,6 +418,26 @@ app.post('/api/typing', async (c) => {
   }
 
   await broadcast('typing', payload, authUser.id)
+
+  return c.json({ ok: true })
+})
+
+app.post('/api/awareness', async (c) => {
+  const authUser = c.get('authUser')
+  const body = await c.req.json<{ state?: AwarenessState | null }>()
+
+  if (body.state === null || body.state === undefined) {
+    awarenessStates.delete(authUser.id)
+  } else {
+    awarenessStates.set(authUser.id, body.state)
+  }
+
+  const payload: SseAwarenessPayload = {
+    userId: authUser.id,
+    state: body.state ?? null,
+  }
+
+  await broadcast('awareness', payload, authUser.id)
 
   return c.json({ ok: true })
 })

@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { ContentEditable } from '@lexical/react/LexicalContentEditable'
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary'
@@ -8,35 +9,38 @@ import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import {
     createYjsBinding,
+    initLocalState,
+    setLocalStateFocus,
+    syncCursorPositions,
     syncLexicalUpdateToYjs,
     syncYjsChangesToLexical,
     type Binding,
     type Provider,
-    type ProviderAwareness,
-    type UserState,
 } from '@lexical/yjs'
-import { $getRoot, SKIP_COLLAB_TAG, type EditorState } from 'lexical'
+import {
+    $getRoot,
+    BLUR_COMMAND,
+    COMMAND_PRIORITY_EDITOR,
+    FOCUS_COMMAND,
+    SKIP_COLLAB_TAG,
+    type EditorState,
+} from 'lexical'
 import { UndoManager, type Doc, type Transaction, type YEvent } from 'yjs'
 
+import { TeamAwareness } from '@/lib/team-awareness'
 import type { TeamDraftSync } from '@/lib/team-draft-sync'
 
 type EvaluateCollaborativeInputProps = {
     doc: Doc
     sync: TeamDraftSync
+    awareness: TeamAwareness
+    awarenessName: string
+    awarenessColor: string
     onChange: (content: string) => void
     onClearReady: (clear: () => void) => void
 }
 
-function createStubProvider(): Provider {
-    const awareness: ProviderAwareness = {
-        getLocalState: () => null,
-        getStates: () => new Map<number, UserState>(),
-        off: () => { },
-        on: () => { },
-        setLocalState: () => { },
-        setLocalStateField: () => { },
-    }
-
+function createProvider(awareness: TeamAwareness): Provider {
     return {
         awareness,
         connect: () => { },
@@ -46,8 +50,33 @@ function createStubProvider(): Provider {
     }
 }
 
-function CollaborationBinding({ doc, sync }: { doc: Doc; sync: TeamDraftSync }) {
+type CollaborationBindingProps = {
+    doc: Doc
+    sync: TeamDraftSync
+    awareness: TeamAwareness
+    name: string
+    color: string
+}
+
+function CursorContainer({ onReady }: { onReady: (element: HTMLDivElement) => void }) {
+    const ref = useRef<HTMLDivElement | null>(null)
+
+    return createPortal(
+        <div
+            ref={(element) => {
+                ref.current = element
+                if (element) {
+                    onReady(element)
+                }
+            }}
+        />,
+        document.body,
+    )
+}
+
+function CollaborationBinding({ doc, sync, awareness, name, color }: CollaborationBindingProps) {
     const [editor] = useLexicalComposerContext()
+    const cursorContainerRef = useRef<HTMLDivElement | null>(null)
 
     useEffect(() => {
         let cancelled = false
@@ -65,7 +94,7 @@ function CollaborationBinding({ doc, sync }: { doc: Doc; sync: TeamDraftSync }) 
                 return
             }
 
-            const provider = createStubProvider()
+            const provider = createProvider(awareness)
             const binding: Binding = createYjsBinding({
                 editor,
                 id: 'team-draft',
@@ -73,7 +102,12 @@ function CollaborationBinding({ doc, sync }: { doc: Doc; sync: TeamDraftSync }) 
                 docMap: new Map(),
             })
 
-            const root = binding.root
+            if (cursorContainerRef.current) {
+                binding.cursorsContainer = cursorContainerRef.current
+            }
+
+            initLocalState(provider, name, color, false, {})
+
             const onYjsTreeChanges = (events: Array<YEvent<any>>, transaction: Transaction) => {
                 const origin = transaction.origin
                 if (origin !== binding) {
@@ -82,7 +116,7 @@ function CollaborationBinding({ doc, sync }: { doc: Doc; sync: TeamDraftSync }) 
                 }
             }
 
-            root.getSharedType().observeDeep(onYjsTreeChanges)
+            binding.root.getSharedType().observeDeep(onYjsTreeChanges)
 
             const removeUpdateListener = editor.registerUpdateListener(
                 ({ prevEditorState, editorState, dirtyLeaves, dirtyElements, normalizedNodes, tags }) => {
@@ -101,8 +135,35 @@ function CollaborationBinding({ doc, sync }: { doc: Doc; sync: TeamDraftSync }) 
                 },
             )
 
+            const removeFocusCommand = editor.registerCommand(
+                FOCUS_COMMAND,
+                () => {
+                    setLocalStateFocus(provider, name, color, true, {})
+                    return false
+                },
+                COMMAND_PRIORITY_EDITOR,
+            )
+
+            const removeBlurCommand = editor.registerCommand(
+                BLUR_COMMAND,
+                () => {
+                    setLocalStateFocus(provider, name, color, false, {})
+                    return false
+                },
+                COMMAND_PRIORITY_EDITOR,
+            )
+
+            const onAwarenessUpdate = () => {
+                syncCursorPositions(binding, provider, { selectionHighlight: true })
+            }
+            awareness.on('update', onAwarenessUpdate)
+            syncCursorPositions(binding, provider, { selectionHighlight: true })
+
             cleanup = () => {
-                root.getSharedType().unobserveDeep(onYjsTreeChanges)
+                awareness.off('update', onAwarenessUpdate)
+                removeFocusCommand()
+                removeBlurCommand()
+                binding.root.getSharedType().unobserveDeep(onYjsTreeChanges)
                 removeUpdateListener()
             }
         })()
@@ -111,9 +172,15 @@ function CollaborationBinding({ doc, sync }: { doc: Doc; sync: TeamDraftSync }) 
             cancelled = true
             cleanup?.()
         }
-    }, [editor, doc, sync])
+    }, [editor, doc, sync, awareness, name, color])
 
-    return null
+    return (
+        <CursorContainer
+            onReady={(element) => {
+                cursorContainerRef.current = element
+            }}
+        />
+    )
 }
 
 function ClearEffect({ onClearReady }: { onClearReady: (clear: () => void) => void }) {
@@ -133,6 +200,9 @@ function ClearEffect({ onClearReady }: { onClearReady: (clear: () => void) => vo
 export function EvaluateCollaborativeInput({
     doc,
     sync,
+    awareness,
+    awarenessName,
+    awarenessColor,
     onChange,
     onClearReady,
 }: EvaluateCollaborativeInputProps) {
@@ -170,7 +240,13 @@ export function EvaluateCollaborativeInput({
                         })
                     }}
                 />
-                <CollaborationBinding doc={doc} sync={sync} />
+                <CollaborationBinding
+                    doc={doc}
+                    sync={sync}
+                    awareness={awareness}
+                    name={awarenessName}
+                    color={awarenessColor}
+                />
                 <ClearEffect onClearReady={onClearReady} />
             </div>
         </LexicalComposer>

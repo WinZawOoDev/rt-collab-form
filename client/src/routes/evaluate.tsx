@@ -1,5 +1,6 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { UserState } from '@lexical/yjs'
 import * as Y from 'yjs'
 
 import { EvaluatePanel } from '@/components/evaluate/evaluate-panel'
@@ -12,13 +13,20 @@ import {
     getMessages,
     getMessagesStreamUrl,
     hydrateAuthToken,
+    sendAwareness,
     sendMessage,
     sendTyping,
     updateMessage,
 } from '@/lib/evaluate-api'
 import type { ApiMessage } from '@/lib/evaluate-api'
 import { mapServerMessage, mapServerMessages, upsertMessage } from '@/lib/messages'
+import {
+    createAwarenessClientId,
+    createAwarenessTransport,
+    TeamAwareness,
+} from '@/lib/team-awareness'
 import { TeamDraftSync } from '@/lib/team-draft-sync'
+import type { AwarenessState } from '@shared/index'
 
 type CurrentUser = {
     id: number
@@ -38,6 +46,21 @@ type TypingUser = {
 
 const TYPING_DISPLAY_MS = 4000
 const TYPING_STOP_DELAY_MS = 3000
+
+const AWARENESS_COLORS = [
+    '#f97316',
+    '#22c55e',
+    '#3b82f6',
+    '#a855f7',
+    '#ec4899',
+    '#14b8a6',
+    '#eab308',
+    '#ef4444',
+]
+
+function pickAwarenessColor(userId: number) {
+    return AWARENESS_COLORS[userId % AWARENESS_COLORS.length]
+}
 
 export const Route = createFileRoute('/evaluate')({
     beforeLoad: async () => {
@@ -70,6 +93,13 @@ function EvaluatePage() {
 
     const doc = useMemo(() => new Y.Doc(), [])
     const sync = useMemo(() => new TeamDraftSync(doc), [doc])
+    const awareness = useMemo(
+        () => new TeamAwareness(createAwarenessClientId()),
+        [],
+    )
+
+    const awarenessName = loaderData.user.name || loaderData.user.email
+    const awarenessColor = pickAwarenessColor(loaderData.user.id)
 
     const typingDisplayTimeoutsRef = useRef<Record<number, number>>({})
 
@@ -115,6 +145,14 @@ function EvaluatePage() {
             sync.destroy()
         }
     }, [sync])
+
+    useEffect(() => {
+        const transport = createAwarenessTransport(awareness, (state) => sendAwareness(state))
+
+        return () => {
+            transport.dispose()
+        }
+    }, [awareness])
 
     const clearTypingDisplayTimeout = (userId: number) => {
         const timeoutId = typingDisplayTimeoutsRef.current[userId]
@@ -261,6 +299,14 @@ function EvaluatePage() {
             }
         }
 
+        const handleIncomingAwareness = (event: MessageEvent<string>) => {
+            try {
+                const payload = JSON.parse(event.data) as { userId: number; state: AwarenessState | null }
+                awareness.setRemoteState(payload.userId, payload.state as unknown as UserState | null)
+            } catch {
+            }
+        }
+
         const handleReady = () => {
             reconnectAttempt = 0
             void sync.refresh()
@@ -282,6 +328,7 @@ function EvaluatePage() {
             source?.removeEventListener('message-delete', handleIncomingMessageDelete)
             source?.removeEventListener('typing', handleIncomingTyping)
             source?.removeEventListener('draft-update', handleIncomingDraftUpdate)
+            source?.removeEventListener('awareness', handleIncomingAwareness)
             source?.removeEventListener('auth-error', handleSseAuthError)
         }
 
@@ -310,6 +357,7 @@ function EvaluatePage() {
             source.addEventListener('message-delete', handleIncomingMessageDelete)
             source.addEventListener('typing', handleIncomingTyping)
             source.addEventListener('draft-update', handleIncomingDraftUpdate)
+            source.addEventListener('awareness', handleIncomingAwareness)
             source.addEventListener('auth-error', handleSseAuthError)
 
             source.onerror = () => {
@@ -329,7 +377,7 @@ function EvaluatePage() {
             source?.close()
             source = null
         }
-    }, [currentUser.id, sync])
+    }, [currentUser.id, sync, awareness])
 
     const typingNames = Object.values(typingUsers)
         .sort((a, b) => a.expiresAt - b.expiresAt)
@@ -343,6 +391,9 @@ function EvaluatePage() {
                     typingUsers={typingNames}
                     doc={doc}
                     sync={sync}
+                    awareness={awareness}
+                    awarenessName={awarenessName}
+                    awarenessColor={awarenessColor}
                     onSendMessage={handleSendMessage}
                     onEditMessage={handleEditMessage}
                     onDeleteMessage={handleDeleteMessage}

@@ -56,6 +56,25 @@ Authorization: Bearer {{token}}
 
 ###
 
+# Broadcasts the caller's Yjs awareness state (cursor position, name, color)
+# to other connected clients. Omit state or send null to remove presence.
+POST {{baseUrl}}/api/awareness
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+	"state": {
+		"anchorPos": null,
+		"focusPos": null,
+		"name": "Evaluate User",
+		"color": "#f97316",
+		"focusing": false,
+		"awarenessData": {}
+	}
+}
+
+###
+
 GET {{baseUrl}}/api/team-draft
 Authorization: Bearer {{token}}
 

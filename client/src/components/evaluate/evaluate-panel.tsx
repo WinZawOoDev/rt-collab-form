@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { EvaluateCollaborativeInput } from '@/components/evaluate/evaluate-collaborative-input'
+import { TeamAwareness } from '@/lib/team-awareness'
 import type { TeamDraftSync } from '@/lib/team-draft-sync'
 
 import type { Message } from './types'
@@ -18,6 +19,9 @@ type EvaluatePanelProps = {
     typingUsers?: string[]
     doc: Doc
     sync: TeamDraftSync
+    awareness: TeamAwareness
+    awarenessName: string
+    awarenessColor: string
     onSendMessage: (content: string) => Promise<boolean>
     onEditMessage?: (id: number, content: string) => Promise<boolean>
     onDeleteMessage?: (id: number) => Promise<boolean>
@@ -32,6 +36,9 @@ export function EvaluatePanel({
     typingUsers = [],
     doc,
     sync,
+    awareness,
+    awarenessName,
+    awarenessColor,
     onSendMessage,
     onEditMessage,
     onDeleteMessage,
@@ -194,6 +201,9 @@ export function EvaluatePanel({
                                             <EvaluateCollaborativeInput
                                                 doc={doc}
                                                 sync={sync}
+                                                awareness={awareness}
+                                                awarenessName={awarenessName}
+                                                awarenessColor={awarenessColor}
                                                 onChange={(nextContent) => {
                                                     field.onChange(nextContent)
                                                 }}

@@ -23,6 +23,20 @@ export type SseTypingPayload = {
   isTyping: boolean
 }
 
+export type AwarenessState = {
+  anchorPos: Record<string, unknown> | null
+  focusPos: Record<string, unknown> | null
+  name: string
+  color: string
+  focusing: boolean
+  awarenessData: Record<string, unknown>
+}
+
+export type SseAwarenessPayload = {
+  userId: number
+  state: AwarenessState | null
+}
+
 export type SseDraftUpdatePayload = {
   update: string
   revision: number

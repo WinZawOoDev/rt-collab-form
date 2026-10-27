@@ -245,6 +245,25 @@ export async function sendTyping(isTyping: boolean) {
   }
 }
 
+export async function sendAwareness(state: unknown) {
+  const response = await fetch(`${API_BASE_URL}/api/awareness`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    },
+    body: JSON.stringify({ state }),
+  })
+
+  if (response.status === 401) {
+    throw new ApiUnauthorizedError('Session expired.')
+  }
+
+  if (!response.ok) {
+    throw new Error('Unable to send awareness state.')
+  }
+}
+
 export async function getTeamDraft(): Promise<TeamDraftState> {
   const response = await fetch(`${API_BASE_URL}/api/team-draft`, {
     headers: {
